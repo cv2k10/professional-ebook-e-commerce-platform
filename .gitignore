@@ -1,0 +1,53 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# Next.js
+.next/
+out/
+build/
+next-env.d.ts
+*.tsbuildinfo
+
+# env files (keep the template)
+.env
+.env*.local
+.env.development
+.env.production
+!.env.example
+
+# private eBook files must never be committed
+private-ebooks/
+
+# drizzle-kit generated output
+drizzle/
+
+# logs and debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# testing / coverage
+coverage/
+
+# deployment
+.vercel/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# local Claude Code settings
+.claude/settings.local.json
