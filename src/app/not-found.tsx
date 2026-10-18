@@ -1,0 +1,2 @@
+import Link from "next/link";
+export default function NotFound(){return <main className="not-found"><p className="eyebrow">Page not found</p><h1>404</h1><h2>This page has left the shelf.</h2><p>Try browsing the complete collection or return to the Folio homepage.</p><div className="hero-actions" style={{justifyContent:"center"}}><Link className="btn-primary" href="/ebooks">Browse eBooks</Link><Link className="btn-secondary" href="/">Go home</Link></div></main>}

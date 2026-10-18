@@ -1,0 +1,10 @@
+import type { Metadata } from "next";
+import Link from "next/link";
+import { redirect } from "next/navigation";
+import { count, desc, eq, sql } from "drizzle-orm";
+import { db } from "@/db";
+import { orders } from "@/db/schema";
+import { getCurrentUser } from "@/lib/auth";
+import { books, bundles, money } from "@/lib/catalog";
+export const metadata:Metadata={title:"Publisher Dashboard",robots:{index:false,follow:false}};
+export default async function AdminPage(){const user=await getCurrentUser();if(!user||user.role!=="admin")redirect("/account");const recent=await db.select().from(orders).orderBy(desc(orders.createdAt)).limit(8);const [stats]=await db.select({orders:count(),revenue:sql<number>`coalesce(sum(case when ${orders.status} = 'paid' then ${orders.totalCents} else 0 end),0)`}).from(orders);return <main><div className="shell dashboard"><aside className="dash-nav"><h2>Folio Publisher</h2><Link href="/admin">Overview</Link><Link href="/admin/products">eBooks & bundles</Link><Link href="/admin/orders">Orders</Link><Link href="/admin/reports">Sales reports</Link><Link href="/">View storefront</Link></aside><section><p className="eyebrow">Store operations</p><h1 style={{font:"400 42px Georgia"}}>Publisher dashboard</h1><div className="metric-grid"><div className="metric"><small>Revenue</small><strong>{money(Number(stats.revenue)/100)}</strong></div><div className="metric"><small>Orders</small><strong>{stats.orders}</strong></div><div className="metric"><small>eBooks</small><strong>{books.length}</strong></div><div className="metric"><small>Bundles</small><strong>{bundles.length}</strong></div></div><h2 style={{font:"500 25px Georgia",marginTop:35}}>Recent orders</h2><table className="admin-table"><thead><tr><th>Order</th><th>Customer</th><th>Status</th><th>Total</th><th>Date</th></tr></thead><tbody>{recent.map(order=><tr key={order.id}><td>{order.orderNumber}</td><td>{order.customerEmail}</td><td><span className="status">{order.status}</span></td><td>{money(order.totalCents/100)}</td><td>{order.createdAt.toLocaleDateString()}</td></tr>)}</tbody></table></section></div></main>}
