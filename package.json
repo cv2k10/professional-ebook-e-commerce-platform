@@ -1,38 +1,49 @@
 {
-  "name": "nextjs-postgresql-template",
+  "name": "folio-bookshop",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
+    "dev": "vite dev --port 3000",
+    "build": "vite build",
+    "preview": "vite preview",
+    "deploy": "vinext-cloudflare deploy",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "types": "cf workers types",
+    "typecheck": "cf workers types && tsc --noEmit",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate:local": "node scripts/migrate-local.mjs",
+    "db:migrate:remote": "cf d1 migrations apply --dir migrations"
   },
   "dependencies": {
+    "@vinext/cloudflare": "^1.1.1",
     "bcryptjs": "^3.0.3",
-    "dotenv": "17.3.1",
     "drizzle-orm": "0.45.2",
     "jose": "^6.2.12",
     "lucide-react": "^1.59.0",
     "next": "16.2.6",
-    "pg": "8.20.0",
-    "react": "19.2.6",
-    "react-dom": "19.2.6",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-server-dom-webpack": "^19.3.1",
     "resend": "^6.34.1",
     "stripe": "^23.0.0",
+    "vinext": "^1.2.1",
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "^2.0.0-beta.v.1",
     "@tailwindcss/postcss": "4.1.17",
     "@types/node": "22.19.15",
-    "@types/pg": "8.18.0",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "^6.1.2",
+    "@vitejs/plugin-rsc": "^0.5.38",
+    "cf": "^1.0.0-beta.18",
     "drizzle-kit": "0.31.10",
     "eslint": "9.39.4",
     "eslint-config-next": "16.2.6",
     "postcss": "8.5.8",
     "tailwindcss": "4.1.17",
-    "typescript": "5.9.3"
-  }
+    "typescript": "5.9.3",
+    "vite": "^8.3.0"
+  },
+  "type": "module"
 }

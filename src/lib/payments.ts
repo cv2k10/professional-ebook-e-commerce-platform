@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { waitUntil } from "cloudflare:workers";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "@/db";
 import { bundles, books } from "@/lib/catalog";
 import { entitlements, orderItems, orders, payments } from "@/db/schema";
@@ -11,27 +12,35 @@ export function createGuestToken(orderId:string,expiresInSeconds=86400*7){const 
 export function verifyGuestToken(token:string,orderId:string){const [id,exp,signature]=token.split(".");if(id!==orderId||!exp||Number(exp)<Date.now()/1000||!signature)return false;const secret=process.env.DOWNLOAD_TOKEN_SECRET||process.env.STRIPE_SECRET_KEY||"development-only-change-me";const expected=crypto.createHmac("sha256",secret).update(`${id}.${exp}`).digest("base64url");return signature.length===expected.length&&crypto.timingSafeEqual(Buffer.from(signature),Buffer.from(expected))}
 export function makeOrderNumber(){return `FL-${new Date().getFullYear()}-${crypto.randomBytes(4).toString("hex").toUpperCase()}`}
 
+// Orders that may still become paid. Refunded/disputed orders are never re-opened by a late webhook.
+const claimableStatuses=["pending","failed","cancelled"] as const;
+
+// D1 has no interactive transactions or row locks, so fulfillment is one atomic batch:
+// the payment upsert and entitlement inserts are idempotent (unique indexes), and the
+// conditional status update decides which concurrent caller "won" and sends the email.
 export async function fulfillOrder(orderId:string, providerRef:string, provider:"stripe"|"paypal", eventId?:string){
-  const result=await db.transaction(async tx=>{
-    const [order]=await tx.select().from(orders).where(eq(orders.id,orderId)).for("update");
-    if(!order)throw new Error("Order not found");
-    if(order.status==="paid")return {order,alreadyPaid:true};
-    const [payment]=await tx.select().from(payments).where(and(eq(payments.provider,provider),eq(payments.providerReference,providerRef)));
-    if(payment)await tx.update(payments).set({status:"succeeded",rawEventId:eventId,updatedAt:new Date()}).where(eq(payments.id,payment.id));
-    else await tx.insert(payments).values({orderId,provider,providerReference:providerRef,status:"succeeded",amountCents:order.totalCents,rawEventId:eventId});
-    await tx.update(orders).set({status:"paid",paidAt:new Date(),updatedAt:new Date()}).where(eq(orders.id,orderId));
-    const lines=await tx.select().from(orderItems).where(eq(orderItems.orderId,orderId));
-    const keys=new Set<string>();
-    for(const line of lines){if(line.itemType==="ebook")keys.add(line.catalogKey);else{const bundle=bundles.find(b=>b.id===line.catalogKey);bundle?.bookIds.forEach(id=>keys.add(id));}}
-    for(const ebookKey of keys)await tx.insert(entitlements).values({orderId,userId:order.userId,customerEmail:order.customerEmail,ebookKey}).onConflictDoNothing();
-    return {order:{...order,status:"paid" as const},alreadyPaid:false};
-  });
-  if(!result.alreadyPaid)void sendOrderEmail(result.order.customerEmail,result.order.orderNumber,orderId);
-  return result;
+  const [order]=await db.select().from(orders).where(eq(orders.id,orderId));
+  if(!order)throw new Error("Order not found");
+  if(!(claimableStatuses as readonly string[]).includes(order.status))return {order,alreadyPaid:true};
+  const lines=await db.select().from(orderItems).where(eq(orderItems.orderId,orderId));
+  const keys=new Set<string>();
+  for(const line of lines){if(line.itemType==="ebook")keys.add(line.catalogKey);else{const bundle=bundles.find(b=>b.id===line.catalogKey);bundle?.bookIds.forEach(id=>keys.add(id));}}
+  const now=new Date();
+  const [claimed]=await db.batch([
+    db.update(orders).set({status:"paid",paidAt:now,updatedAt:now}).where(and(eq(orders.id,orderId),inArray(orders.status,claimableStatuses))).returning({id:orders.id}),
+    db.insert(payments).values({orderId,provider,providerReference:providerRef,status:"succeeded",amountCents:order.totalCents,rawEventId:eventId}).onConflictDoUpdate({target:[payments.provider,payments.providerReference],set:{status:"succeeded",rawEventId:eventId,updatedAt:now}}),
+    ...(keys.size?[db.insert(entitlements).values([...keys].map(ebookKey=>({orderId,userId:order.userId,customerEmail:order.customerEmail,ebookKey}))).onConflictDoNothing()]:[]),
+  ]);
+  const paidOrder={...order,status:"paid" as const,paidAt:now};
+  if(!claimed.length)return {order:paidOrder,alreadyPaid:true};
+  // Workers cancel un-awaited work after the response; waitUntil keeps the email send alive.
+  waitUntil(sendOrderEmail(order.customerEmail,order.orderNumber,orderId).catch(error=>console.error("order email",error)));
+  return {order:paidOrder,alreadyPaid:false};
 }
 
 export async function revokeOrder(orderId:string,status:"refunded"|"disputed"){
-  await db.transaction(async tx=>{await tx.update(orders).set({status,updatedAt:new Date()}).where(eq(orders.id,orderId));await tx.update(entitlements).set({revokedAt:new Date()}).where(and(eq(entitlements.orderId,orderId),isNull(entitlements.revokedAt)));});
+  const now=new Date();
+  await db.batch([db.update(orders).set({status,updatedAt:now}).where(eq(orders.id,orderId)),db.update(entitlements).set({revokedAt:now}).where(and(eq(entitlements.orderId,orderId),isNull(entitlements.revokedAt)))]);
 }
 async function sendOrderEmail(email:string,orderNumber:string,orderId:string){
   if(!process.env.RESEND_API_KEY)return;

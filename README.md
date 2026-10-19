@@ -1,15 +1,30 @@
 # Folio Digital Bookshop
 
-A full-stack Next.js App Router eBook shop using PostgreSQL, Drizzle ORM, Stripe Checkout, PayPal Orders, private downloads, transactional email, and role-protected administration.
+A full-stack Next.js App Router eBook shop running on Cloudflare Workers via [vinext](https://github.com/cloudflare/vinext), with Cloudflare D1 (Drizzle ORM), private eBook files in Cloudflare R2, Stripe Checkout, PayPal Orders, transactional email, and role-protected administration.
 
 ## Local setup
 
-1. Copy `.env.example` to `.env` and set `DATABASE_URL` and `DOWNLOAD_TOKEN_SECRET`.
-2. Install dependencies with `npm install`.
-3. Apply the schema with `npx drizzle-kit push`.
-4. Run `npm run dev` and open `http://localhost:3000`.
+1. Install dependencies with `npm install`.
+2. Copy `.env.example` to `.env` and set at least `DOWNLOAD_TOKEN_SECRET`. Only variables declared in `cloudflare.config.ts` reach the Worker.
+3. Run `npm run dev` once so the local D1 and R2 state is created under `.cloudflare/state`, then apply the schema with `npm run db:migrate:local`.
+4. Open `http://localhost:3000`.
 
-The storefront demonstration catalog lives in `src/lib/catalog.ts`; all checkout prices are rebuilt from this server-owned catalog. The PostgreSQL schema is ready for replacing those records with admin-managed catalog queries.
+Local D1 and R2 are simulated by Miniflare; no Cloudflare account is needed for development. To make a book downloadable locally, upload a PDF to the local bucket:
+
+`npx cf r2 objects put book-deep-work.pdf --bucket-name folio-ebooks --file ./book-deep-work.pdf --content-type application/pdf --local --persist-to .cloudflare/state`
+
+The storefront demonstration catalog lives in `src/lib/catalog.ts`; all checkout prices are rebuilt from this server-owned catalog. The D1 schema is ready for replacing those records with admin-managed catalog queries.
+
+Schema changes: edit `src/db/schema.ts`, run `npm run db:generate` to write a new file to `migrations/`, then `npm run db:migrate:local`.
+
+## Deploy to Cloudflare
+
+1. Sign in with `npx cf auth login`.
+2. Run `npm run deploy`. The D1 database `folio-db` and R2 bucket `folio-ebooks` are declared in `cloudflare.config.ts` by name and are created on first deploy if they do not exist.
+3. Find the database ID with `npx cf d1 list`, then apply migrations: `npm run db:migrate:remote -- <database-id>`.
+4. Set every secret declared in `cloudflare.config.ts` (`npx cf workers secrets update --help` shows the syntax; `cf workers secrets bulk` sets several at once).
+5. Set `NEXT_PUBLIC_SITE_URL` in `.env` (or the build environment) to the production URL before building, since it is inlined at build time.
+6. Upload eBook files to the `folio-ebooks` bucket with `npx cf r2 objects put <key>.pdf --bucket-name folio-ebooks --file <path>` (without `--local`).
 
 ## Stripe sandbox
 
@@ -25,9 +40,9 @@ Create a REST app in the PayPal Developer Dashboard. Set its sandbox client ID a
 
 ## Private eBook delivery
 
-Files are never placed under `public/`. Mount a private directory and set `PRIVATE_EBOOK_DIR`. Demonstration file names use stable catalog keys, e.g. `book-deep-work.pdf`. The download route verifies a signed expiring token, a paid order, a live entitlement, and a per-order rate limit before streaming an attachment. In a cloud deployment, replace the final filesystem read with a private S3/R2/GCS `GetObject` or short-lived signed URL while keeping the same entitlement checks.
+Files are never placed under `public/`; they live in the private R2 bucket bound as `EBOOKS`, keyed by stable catalog keys, e.g. `book-deep-work.pdf`. Do not enable public access or an `r2.dev` domain on that bucket. The download route verifies a signed expiring token, a paid order, a live entitlement, and a per-order rate limit (10 downloads per 15 minutes, counted from `download_logs` in D1) before streaming the object from R2 as an attachment.
 
-Refund and dispute webhooks mark the order and revoke its active entitlements. Webhook fulfillment uses a unique `(order, ebook key)` constraint and row lock to remain idempotent.
+Refund and dispute webhooks mark the order and revoke its active entitlements. D1 has no interactive transactions or row locks, so fulfillment runs as one atomic `db.batch`: a conditional status update (only `pending`, `failed` or `cancelled` orders can become paid) decides which concurrent webhook wins and sends the email, while the payment upsert and the unique `(order, ebook key)` constraint keep retries idempotent. A late payment webhook never reopens a refunded or disputed order.
 
 ## Email
 
@@ -35,9 +50,9 @@ Create a Resend API key, verify the sending domain, and set `RESEND_API_KEY` and
 
 ## Admin access
 
-Register normally, then promote the intended operator directly from a trusted database console:
+Register normally, then promote the intended operator directly from a trusted console:
 
-`UPDATE users SET role = 'admin' WHERE email = 'owner@example.com';`
+`npx cf d1 query <database-id> --sql "UPDATE users SET role = 'admin' WHERE email = 'owner@example.com'"`
 
 The `/admin` area and subpages verify the server-side session role and are excluded from indexing.
 
@@ -46,11 +61,11 @@ The `/admin` area and subpages verify the server-side session role and are exclu
 - Set a strong, unique `DOWNLOAD_TOKEN_SECRET` and HTTPS canonical URL.
 - Use live payment keys only in the production secret manager.
 - Confirm webhook signatures and event subscriptions in both providers.
-- Use managed PostgreSQL with point-in-time recovery and encrypted daily backups.
-- Store eBooks in private object storage with versioning and malware-scanned uploads.
-- Configure a durable distributed rate limiter (Redis/Upstash) for multi-instance deployments.
+- Confirm D1 Time Travel (point-in-time recovery) covers your retention needs and export backups regularly.
+- Keep the R2 bucket private, and scan uploads for malware before adding them.
+- Password hashing (bcrypt, cost 12) runs in the Worker and needs far more CPU time than the Workers Free plan's 10 ms per request; use the Workers Paid plan.
 - Add jurisdiction-specific tax calculation and legal copy before launch.
-- Run `npx next typegen`, `npm exec tsc -- --noEmit`, and `npm run build` in CI.
+- Run `npm run lint`, `npm run typecheck`, and `npm run build` in CI.
 - Rotate provider and email credentials periodically and review payment/audit logs.
 
 ## Security model
