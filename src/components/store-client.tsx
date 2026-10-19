@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 import { BookOpen, Check, ChevronDown, Menu, Search, ShoppingBag, UserRound, X } from "lucide-react";
 import { books, bundles, getCatalogItem, money, type Book } from "@/lib/catalog";
 
@@ -16,19 +16,37 @@ type CartContextType = {
 };
 const CartContext = createContext<CartContextType | null>(null);
 
+// The cart lives in localStorage; useSyncExternalStore reads it without a setState-in-effect
+// and serves an empty cart on the server and during hydration.
+const CART_KEY = "folio-cart";
+const EMPTY_CART: string[] = [];
+const cartListeners = new Set<() => void>();
+let cartCache: string[] | null = null;
+function readCart() {
+  if (cartCache === null) {
+    try { const parsed = JSON.parse(localStorage.getItem(CART_KEY) || "[]"); cartCache = Array.isArray(parsed) ? parsed : []; } catch { cartCache = []; }
+  }
+  return cartCache;
+}
+function setItems(update: (old: string[]) => string[]) {
+  cartCache = update(readCart());
+  try { localStorage.setItem(CART_KEY, JSON.stringify(cartCache)); } catch {}
+  cartListeners.forEach((listener) => listener());
+}
+function subscribeCart(listener: () => void) {
+  cartListeners.add(listener);
+  const onStorage = (e: StorageEvent) => { if (e.key === CART_KEY) { cartCache = null; listener(); } };
+  window.addEventListener("storage", onStorage);
+  return () => { cartListeners.delete(listener); window.removeEventListener("storage", onStorage); };
+}
+
 export function CartProvider({ children }: { children: ReactNode }) {
-  const [items, setItems] = useState<string[]>([]);
-  const [ready, setReady] = useState(false);
-  useEffect(() => {
-    try { setItems(JSON.parse(localStorage.getItem("folio-cart") || "[]")); } catch { setItems([]); }
-    setReady(true);
-  }, []);
-  useEffect(() => { if (ready) localStorage.setItem("folio-cart", JSON.stringify(items)); }, [items, ready]);
+  const items = useSyncExternalStore(subscribeCart, readCart, () => EMPTY_CART);
   const value = useMemo(() => ({
     items,
     add: (id: string) => setItems((old) => old.includes(id) ? old : [...old, id]),
     remove: (id: string) => setItems((old) => old.filter((item) => item !== id)),
-    clear: () => setItems([]),
+    clear: () => setItems(() => []),
     count: items.length,
     total: items.reduce((sum, id) => sum + (getCatalogItem(id)?.price || 0), 0),
   }), [items]);
@@ -59,7 +77,9 @@ export function SiteHeader() {
   const router = useRouter();
   const pathname = usePathname();
   const submit = (e: React.FormEvent) => { e.preventDefault(); if (query.trim()) router.push(`/search?q=${encodeURIComponent(query.trim())}`); };
-  useEffect(() => setOpen(false), [pathname]);
+  // Close the mobile menu on navigation by adjusting state during render rather than in an effect.
+  const [menuPath, setMenuPath] = useState(pathname);
+  if (menuPath !== pathname) { setMenuPath(pathname); setOpen(false); }
   return <>
     <div className="announcement"><span>Fresh pages, better ideas.</span><strong> Save 20% on selected reads</strong><Link href="/ebooks">Shop the edit →</Link></div>
     <header className="site-header">
